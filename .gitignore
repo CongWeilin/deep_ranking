@@ -1,0 +1,15 @@
+.idea/*
+*/.ipynb_checkpoints/*
+
+ckptdir/
+
+*.pyc
+*.swp
+
+venv/*
+
+ranking/data/mslr-*
+ranking/data/expedia
+ranking/ckptdir/
+
+MSLR-WEB10K.zip
