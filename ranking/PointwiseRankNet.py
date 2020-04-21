@@ -317,39 +317,61 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
     if writer:
         writer.add_scalars('loss/mse_loss', {phase: avg_cost.item()}, epoch)
 
+def apply_solver(pairwise_scores, ofe_score_min_cap=0, ofe_score_max_cap=1):
+    # num_docs = pairwise_scores.shape[0]
+    ofe_tree_sum_clipped = pairwise_scores.clip(ofe_score_min_cap, ofe_score_max_cap)
+    ofe_tree_sum_norm = 6 * (ofe_tree_sum_clipped-ofe_score_min_cap)/(ofe_score_max_cap-ofe_score_min_cap) - 3
+    ofe_score = 1/(1+np.exp(-ofe_tree_sum_norm))
+    ofe_score_diag = ofe_score.copy()
+    np.fill_diagonal(ofe_score_diag.values, 0.5)
+    scores = ofe_score_diag.sum(axis=1)/10
+    return scores, ofe_score_diag, ofe_score 
 
 def eval_ndcg_at_k(
-        inference_model, device, df_valid, valid_loader, batch_size, k_list, epoch,
+        inference_model, device, df_valid, valid_loader, k_list, epoch,
         writer=None, phase="Eval"
 ):
-    # print("Eval Phase evaluate NDCG @ {}".format(k_list))
-    ndcg_metrics = {k: NDCG(k) for k in k_list}
-    qids, rels, scores = [], [], []
     inference_model.eval()
     with torch.no_grad():
-        for qid, rel, x in valid_loader.generate_query_batch(df_valid, batch_size):
-            if x is None or x.shape[0] == 0:
-                continue
-            y_tensor = inference_model.forward(torch.Tensor(x).to(device))
-            scores.append(y_tensor.cpu().numpy().squeeze())
-            qids.append(qid)
-            rels.append(rel)
+        print("Eval Phase evaluate NDCG @ {}".format(k_list))
+        ndcg_metrics = {k: NDCG(k) for k in k_list}
+        for X, Y in loader.generate_batch_per_query(df_valid): 
+            num_inputs = len(X)
+            inputs = []
+            labels = []
+            num_pairs = 0
+            for i in range(num_inputs-1):
+                for j in range(i+1, num_inputs):
+                    inputs_ = np.concatenate([X[i], X[j], X[i]-X[j]], axis=0)
+                    labels_ = Y[i]-Y[j]
+                    inputs.append(inputs_)
+                    labels.append(labels_)
+                    num_pairs += 1
+            inputs = np.stack(inputs)
+            pairs_in_compute += num_pairs
+            inputs_tensor = torch.tensor(inputs, device=device)
+            outputs = model(inputs_tensor)
 
-    qids = np.hstack(qids)
-    rels = np.hstack(rels)
-    scores = np.hstack(scores)
-    result_df = pd.DataFrame({'qid': qids, 'rel': rels, 'score': scores})
-    session_ndcgs = defaultdict(list)
-    for qid in result_df.qid.unique():
-        result_qid = result_df[result_df.qid ==
-                               qid].sort_values('score', ascending=False)
-        rel_rank = result_qid.rel.values
-        for k, ndcg in ndcg_metrics.items():
-            if ndcg.maxDCG(rel_rank) == 0:
-                continue
-            ndcg_k = ndcg.evaluate(rel_rank)
-            if not np.isnan(ndcg_k):
-                session_ndcgs[k].append(ndcg_k)
+            score_matrix = np.eye(num_inputs) * 0.5
+            cnt = 0
+            for i in range(num_inputs-1):
+                for j in range(i+1, num_inputs):
+                    score_matrix[i, j] = outputs[cnt].item()
+                    cnt += 1
+
+            score, pairwise_prob_diag, pairwise_prob = apply_solver(score_matrix)
+            relavance = Y.reshape(-1)
+
+            session_ndcgs = defaultdict(list)
+            result_df = pd.DataFrame({'relavance': relavance, 'score': score})
+            result_df.sort_values('score', ascending=False)
+            rel_rank = result_df.relavance.values
+            for k, ndcg in ndcg_metrics.items():
+                if ndcg.maxDCG(rel_rank) == 0:
+                    continue
+                ndcg_k = ndcg.evaluate(rel_rank)
+                if not np.isnan(ndcg_k):
+                    session_ndcgs[k].append(ndcg_k)
 
     ndcg_result = {k: np.mean(session_ndcgs[k]) for k in k_list}
     ndcg_result_print = ", ".join(
