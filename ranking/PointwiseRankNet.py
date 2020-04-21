@@ -6,7 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
+import pandas as pd
+from collections import defaultdict
 from load_mslr import get_time
+from metrics import NDCG
 from utils import (
     # eval_cross_entropy_loss,
     # eval_ndcg_at_k,
@@ -145,7 +148,11 @@ def train_rank_net(
 
     for i in range(start_epoch, start_epoch + additional_epoch):
 
-        scheduler.step()
+        ###
+        eval_model(net, device, df_valid,
+                    valid_loader, i, writer)
+        ###
+
         net.zero_grad()
         net.train()
 
@@ -155,8 +162,9 @@ def train_rank_net(
                 precision=precision, device=device, debug=debug)
         else:
             raise NotImplementedError()
-
+        
         losses.append(epoch_loss)
+        scheduler.step()
         print('=' * 20 + '\n', get_time(),
               'Epoch{}, loss : {}'.format(i, losses[-1]), '\n' + '=' * 20)
 
@@ -260,10 +268,10 @@ def eval_model(inference_model, device, df_valid, valid_loader, epoch, writer=No
     batch_size = 1000000
 
     with torch.no_grad():
-        eval_mse_loss(inference_model, device,
-                      valid_loader, epoch, writer)
+        # eval_mse_loss(inference_model, device,
+        #               valid_loader, epoch, writer)
         ndcg_result = eval_ndcg_at_k(
-            inference_model, device, df_valid, valid_loader, batch_size, [10, 30], epoch, writer)
+            inference_model, device, df_valid, valid_loader, [10, 30], epoch, writer)
     return ndcg_result
 
 
@@ -279,14 +287,14 @@ def load_from_ckpt(ckpt_file, epoch, model):
 
 
 def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma=1.0):
-    print(get_time(), "{} Phase evaluate pairwise cross entropy loss".format(phase))
+    print(get_time(), "{} Phase evaluate pairwise mse loss".format(phase))
     model.eval()
     with torch.set_grad_enabled(False):
         total_cost = []
         pairs_in_compute = 0
         for X, Y in loader.generate_batch_per_query(loader.df):
             num_inputs = len(X)
-
+            
             inputs = []
             labels = []
             num_pairs = 0
@@ -298,12 +306,18 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
                     labels.append(labels_)
                     num_pairs += 1
 
+            # skip negative sessions, no relevant info:
+            if len(inputs)==0:
+                continue
             inputs = np.stack(inputs)
             labels = np.stack(labels)
+            labels = labels.reshape(-1,1).astype(np.float32)
+
             pairs_in_compute += num_pairs
 
             inputs_tensor = torch.tensor(inputs, device=device)
-            labels_tensor = torch.Tensor(labels, device=device)
+            labels_tensor = torch.tensor(labels, device=device)
+            labels_tensor = torch.sigmoid(labels_tensor)
             outputs = model(inputs_tensor)
             loss = model.calculate_loss(outputs, labels_tensor)
             total_cost.append(loss.item())
@@ -312,10 +326,10 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
     print(
         get_time(),
         "Epoch {}: {} Phase pairwise mse loss {:.6f}, total_paris {}".format(
-            epoch, phase, avg_cost.item(), pairs_in_compute
+            epoch, phase, avg_cost, pairs_in_compute
         ))
     if writer:
-        writer.add_scalars('loss/mse_loss', {phase: avg_cost.item()}, epoch)
+        writer.add_scalars('loss/mse_loss', {phase: avg_cost}, epoch)
 
 def apply_solver(pairwise_scores, ofe_score_min_cap=0, ofe_score_max_cap=1):
     # num_docs = pairwise_scores.shape[0]
@@ -323,7 +337,7 @@ def apply_solver(pairwise_scores, ofe_score_min_cap=0, ofe_score_max_cap=1):
     ofe_tree_sum_norm = 6 * (ofe_tree_sum_clipped-ofe_score_min_cap)/(ofe_score_max_cap-ofe_score_min_cap) - 3
     ofe_score = 1/(1+np.exp(-ofe_tree_sum_norm))
     ofe_score_diag = ofe_score.copy()
-    np.fill_diagonal(ofe_score_diag.values, 0.5)
+    np.fill_diagonal(ofe_score_diag, 0.5)
     scores = ofe_score_diag.sum(axis=1)/10
     return scores, ofe_score_diag, ofe_score 
 
@@ -335,7 +349,7 @@ def eval_ndcg_at_k(
     with torch.no_grad():
         print("Eval Phase evaluate NDCG @ {}".format(k_list))
         ndcg_metrics = {k: NDCG(k) for k in k_list}
-        for X, Y in loader.generate_batch_per_query(df_valid): 
+        for X, Y in valid_loader.generate_batch_per_query(df_valid): 
             num_inputs = len(X)
             inputs = []
             labels = []
@@ -347,10 +361,11 @@ def eval_ndcg_at_k(
                     inputs.append(inputs_)
                     labels.append(labels_)
                     num_pairs += 1
+            if len(inputs)==0:
+                continue
             inputs = np.stack(inputs)
-            pairs_in_compute += num_pairs
             inputs_tensor = torch.tensor(inputs, device=device)
-            outputs = model(inputs_tensor)
+            outputs = inference_model(inputs_tensor)
 
             score_matrix = np.eye(num_inputs) * 0.5
             cnt = 0
