@@ -148,11 +148,6 @@ def train_rank_net(
 
     for i in range(start_epoch, start_epoch + additional_epoch):
 
-        ###
-        eval_model(net, device, df_valid,
-                    valid_loader, i, writer)
-        ###
-
         net.zero_grad()
         net.train()
 
@@ -268,10 +263,8 @@ def eval_model(inference_model, device, df_valid, valid_loader, epoch, writer=No
     batch_size = 1000000
 
     with torch.no_grad():
-        # eval_mse_loss(inference_model, device,
-        #               valid_loader, epoch, writer)
-        ndcg_result = eval_ndcg_at_k(
-            inference_model, device, df_valid, valid_loader, [10, 30], epoch, writer)
+        eval_mse_loss(inference_model, device, valid_loader, epoch, writer)
+        ndcg_result = eval_ndcg_at_k(inference_model, device, df_valid, valid_loader, [10, 30], epoch, writer)
     return ndcg_result
 
 
