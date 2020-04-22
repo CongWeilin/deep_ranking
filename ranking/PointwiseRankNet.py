@@ -23,7 +23,7 @@ from utils import (
 
 
 class PointwiseRankNet(nn.Module):
-    def __init__(self, net_structures, double_precision=False):
+    def __init__(self, net_structures):
         """
         :param net_structures: list of int for RankNet FC width
         """
@@ -31,13 +31,9 @@ class PointwiseRankNet(nn.Module):
         self.fc_layers = len(net_structures)
         for i in range(len(net_structures) - 1):
             layer = nn.Linear(net_structures[i], net_structures[i+1])
-            if double_precision:
-                layer = layer.double()
             setattr(self, 'fc' + str(i + 1), layer)
 
         last_layer = nn.Linear(net_structures[-1], 1)
-        if double_precision:
-            last_layer = last_layer.double()
         setattr(self, 'fc' + str(len(net_structures)), last_layer)
         self.criterion = nn.MSELoss()
 
@@ -95,8 +91,7 @@ class PointwiseRankNet(nn.Module):
 
 def train_rank_net(
         start_epoch=0, additional_epoch=100, lr=0.0001, optim="adam",
-        train_algo='baseline',
-        double_precision=False, standardize=False,
+        train_algo='baseline', standardize=False,
         small_dataset=False, debug=False,
         output_dir="/tmp/ranking_output/"):
     """
@@ -106,7 +101,6 @@ def train_rank_net(
     :param lr: float
     :param optim: str
     :param train_algo: str
-    :param double_precision: boolean
     :param standardize: boolean
     :param small_dataset: boolean
     :param debug: boolean
@@ -116,17 +110,17 @@ def train_rank_net(
         start_epoch, additional_epoch, lr))
     writer = SummaryWriter(output_dir)
 
-    precision = torch.float64 if double_precision else torch.float32
-
     # get training and validation data:
     data_fold = 'Fold1'
-    train_loader, df_train, valid_loader, df_valid, test_loader, df_test = load_train_vali_data(data_fold, small_dataset)
+    train_loader, df_train, valid_loader, df_valid, test_loader, df_test = load_train_vali_data(
+        data_fold, small_dataset)
     if standardize:
         df_train, scaler = train_loader.train_scaler_and_transform()
         df_valid = valid_loader.apply_scaler(scaler)
+        df_test = test_loader.apply_scaler(scaler)
 
     net, ckptfile = get_train_inference_net(
-        train_algo, train_loader.num_features, start_epoch, double_precision)
+        train_algo, train_loader.num_features, start_epoch)
     device = get_device()
     net.to(device)
 
@@ -147,13 +141,15 @@ def train_rank_net(
 
     for i in range(start_epoch, start_epoch + additional_epoch):
 
+        eval_model(net, device, df_valid,
+                   valid_loader, i, writer)
+
         net.zero_grad()
         net.train()
 
         if train_algo == 'baseline':
             epoch_loss = baseline_pairwise_training_loop(
-                i, net, optimizer, train_loader,
-                precision=precision, device=device, debug=debug)
+                i, net, optimizer, train_loader, device=device, debug=debug)
         else:
             raise NotImplementedError()
 
@@ -189,7 +185,7 @@ def train_rank_net(
     )
 
 
-def get_train_inference_net(train_algo, num_features, start_epoch, double_precision):
+def get_train_inference_net(train_algo, num_features, start_epoch):
     ranknet_structure = [num_features*3, 128, 64]
 
     if train_algo == 'baseline':
@@ -206,8 +202,7 @@ def get_train_inference_net(train_algo, num_features, start_epoch, double_precis
 
 
 def baseline_pairwise_training_loop(
-        epoch, net, optimizer, train_loader, batch_size=100000,
-        precision=torch.float32, device="cpu", debug=False):
+        epoch, net, optimizer, train_loader, batch_size=100000, device="cpu", debug=False):
     minibatch_loss = []
     minibatch = 0
     count = 0
@@ -224,8 +219,8 @@ def baseline_pairwise_training_loop(
         inputs = np.concatenate([x_i_concat, x_j_concat], axis=0)
         labels = np.concatenate([y_i_concat, y_j_concat], axis=0)
 
-        inputs = torch.tensor(inputs, dtype=precision, device=device)
-        labels = torch.tensor(labels, dtype=precision, device=device)
+        inputs = torch.tensor(inputs, dtype=torch.float32, device=device)
+        labels = torch.tensor(labels, dtype=torch.float32, device=device)
         labels = torch.sigmoid(labels)
         # print(labels.min(), labels.max())
 
@@ -259,7 +254,6 @@ def eval_model(inference_model, device, df_valid, valid_loader, epoch, writer=No
     :return:
     """
     inference_model.eval()  # Set model to evaluate mode
-    batch_size = 1000000
 
     with torch.no_grad():
         eval_mse_loss(inference_model, device, valid_loader, epoch, writer)
@@ -304,12 +298,12 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
                 continue
             inputs = np.stack(inputs)
             labels = np.stack(labels)
-            labels = labels.reshape(-1, 1).astype(np.float32)
+            labels = labels.reshape(-1, 1)
 
             pairs_in_compute += num_pairs
 
-            inputs_tensor = torch.tensor(inputs, device=device)
-            labels_tensor = torch.tensor(labels, device=device)
+            inputs_tensor = torch.tensor(inputs, dtype=torch.float32, device=device)
+            labels_tensor = torch.tensor(labels, dtype=torch.float32, device=device)
             labels_tensor = torch.sigmoid(labels_tensor)
             outputs = model(inputs_tensor)
             loss = model.calculate_loss(outputs, labels_tensor)
@@ -361,7 +355,7 @@ def eval_ndcg_at_k(
             if len(inputs) == 0:
                 continue
             inputs = np.stack(inputs)
-            inputs_tensor = torch.tensor(inputs, device=device)
+            inputs_tensor = torch.tensor(inputs, dtype=torch.float32, device=device)
             outputs = inference_model(inputs_tensor)
 
             score_matrix = np.eye(num_inputs) * 0.5
@@ -404,8 +398,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     train_rank_net(
         args.start_epoch, args.additional_epoch, args.lr, args.optim,
-        args.train_algo,
-        args.double_precision, args.standardize,
+        args.train_algo, args.standardize,
         args.small_dataset, args.debug,
         output_dir=args.output_dir,
     )
