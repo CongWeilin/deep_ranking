@@ -141,9 +141,6 @@ def train_rank_net(
 
     for i in range(start_epoch, start_epoch + additional_epoch):
 
-        eval_model(net, device, df_valid,
-                   valid_loader, i, writer)
-
         net.zero_grad()
         net.train()
 
@@ -364,8 +361,10 @@ def eval_ndcg_at_k(
 
             score_matrix = np.eye(num_inputs) * 0.5
             cnt = 0
-            for i in range(num_inputs-1):
-                for j in range(i+1, num_inputs):
+            for i in range(num_inputs):
+                for j in range(num_inputs):
+                    if i==j:
+                        continue
                     score_matrix[i, j] = outputs[cnt].item()
                     cnt += 1
 
