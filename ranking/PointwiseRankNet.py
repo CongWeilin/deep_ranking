@@ -285,8 +285,10 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
             inputs = []
             labels = []
             num_pairs = 0
-            for i in range(num_inputs-1):
-                for j in range(i+1, num_inputs):
+            for i in range(num_inputs):
+                for j in range(num_inputs):
+                    if i==j:
+                        continue
                     inputs_ = np.concatenate([X[i], X[j], X[i]-X[j]], axis=0)
                     labels_ = Y[i]-Y[j]
                     inputs.append(inputs_)
@@ -345,8 +347,10 @@ def eval_ndcg_at_k(
             inputs = []
             labels = []
             num_pairs = 0
-            for i in range(num_inputs-1):
-                for j in range(i+1, num_inputs):
+            for i in range(num_inputs):
+                for j in range(num_inputs):
+                    if i==j:
+                        continue
                     inputs_ = np.concatenate([X[i], X[j], X[i]-X[j]], axis=0)
                     labels_ = Y[i]-Y[j]
                     inputs.append(inputs_)
