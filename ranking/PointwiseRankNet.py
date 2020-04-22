@@ -120,8 +120,7 @@ def train_rank_net(
 
     # get training and validation data:
     data_fold = 'Fold1'
-    train_loader, df_train, valid_loader, df_valid = load_train_vali_data(
-        data_fold, small_dataset)
+    train_loader, df_train, valid_loader, df_valid, test_loader, df_test = load_train_vali_data(data_fold, small_dataset)
     if standardize:
         df_train, scaler = train_loader.train_scaler_and_transform()
         df_valid = valid_loader.apply_scaler(scaler)
@@ -157,7 +156,7 @@ def train_rank_net(
                 precision=precision, device=device, debug=debug)
         else:
             raise NotImplementedError()
-        
+
         losses.append(epoch_loss)
         scheduler.step()
         print('=' * 20 + '\n', get_time(),
@@ -177,7 +176,7 @@ def train_rank_net(
     # final evaluation
     net.load_state_dict(net.state_dict())
     ndcg_result = eval_model(
-        net, device, df_valid, valid_loader, start_epoch + additional_epoch, writer)
+        net, device, df_test, test_loader, start_epoch + additional_epoch, writer)
 
     # save the final model
     torch.save(net.state_dict(), ckptfile)
@@ -264,7 +263,8 @@ def eval_model(inference_model, device, df_valid, valid_loader, epoch, writer=No
 
     with torch.no_grad():
         eval_mse_loss(inference_model, device, valid_loader, epoch, writer)
-        ndcg_result = eval_ndcg_at_k(inference_model, device, df_valid, valid_loader, [10, 30], epoch, writer)
+        ndcg_result = eval_ndcg_at_k(inference_model, device, df_valid, valid_loader, [
+                                     10, 30], epoch, writer)
     return ndcg_result
 
 
@@ -287,7 +287,7 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
         pairs_in_compute = 0
         for X, Y in loader.generate_batch_per_query(loader.df):
             num_inputs = len(X)
-            
+
             inputs = []
             labels = []
             num_pairs = 0
@@ -300,11 +300,11 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
                     num_pairs += 1
 
             # skip negative sessions, no relevant info:
-            if len(inputs)==0:
+            if len(inputs) == 0:
                 continue
             inputs = np.stack(inputs)
             labels = np.stack(labels)
-            labels = labels.reshape(-1,1).astype(np.float32)
+            labels = labels.reshape(-1, 1).astype(np.float32)
 
             pairs_in_compute += num_pairs
 
@@ -324,15 +324,19 @@ def eval_mse_loss(model, device, loader, epoch, writer=None, phase="Eval", sigma
     if writer:
         writer.add_scalars('loss/mse_loss', {phase: avg_cost}, epoch)
 
+
 def apply_solver(pairwise_scores, ofe_score_min_cap=0, ofe_score_max_cap=1):
     # num_docs = pairwise_scores.shape[0]
-    ofe_tree_sum_clipped = pairwise_scores.clip(ofe_score_min_cap, ofe_score_max_cap)
-    ofe_tree_sum_norm = 6 * (ofe_tree_sum_clipped-ofe_score_min_cap)/(ofe_score_max_cap-ofe_score_min_cap) - 3
+    ofe_tree_sum_clipped = pairwise_scores.clip(
+        ofe_score_min_cap, ofe_score_max_cap)
+    ofe_tree_sum_norm = 6 * (ofe_tree_sum_clipped-ofe_score_min_cap) / \
+        (ofe_score_max_cap-ofe_score_min_cap) - 3
     ofe_score = 1/(1+np.exp(-ofe_tree_sum_norm))
     ofe_score_diag = ofe_score.copy()
     np.fill_diagonal(ofe_score_diag, 0.5)
     scores = ofe_score_diag.sum(axis=1)/10
-    return scores, ofe_score_diag, ofe_score 
+    return scores, ofe_score_diag, ofe_score
+
 
 def eval_ndcg_at_k(
         inference_model, device, df_valid, valid_loader, k_list, epoch,
@@ -342,7 +346,7 @@ def eval_ndcg_at_k(
     with torch.no_grad():
         print("Eval Phase evaluate NDCG @ {}".format(k_list))
         ndcg_metrics = {k: NDCG(k) for k in k_list}
-        for X, Y in valid_loader.generate_batch_per_query(df_valid): 
+        for X, Y in valid_loader.generate_batch_per_query(df_valid):
             num_inputs = len(X)
             inputs = []
             labels = []
@@ -354,7 +358,7 @@ def eval_ndcg_at_k(
                     inputs.append(inputs_)
                     labels.append(labels_)
                     num_pairs += 1
-            if len(inputs)==0:
+            if len(inputs) == 0:
                 continue
             inputs = np.stack(inputs)
             inputs_tensor = torch.tensor(inputs, device=device)
@@ -367,7 +371,8 @@ def eval_ndcg_at_k(
                     score_matrix[i, j] = outputs[cnt].item()
                     cnt += 1
 
-            score, pairwise_prob_diag, pairwise_prob = apply_solver(score_matrix)
+            score, pairwise_prob_diag, pairwise_prob = apply_solver(
+                score_matrix)
             relavance = Y.reshape(-1)
 
             session_ndcgs = defaultdict(list)

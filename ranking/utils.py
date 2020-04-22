@@ -53,10 +53,11 @@ def load_train_vali_data(data_fold, small_dataset=False):
     :param data_fold: str, which fold's data was going to use to train
     :return:
     """
+
     if small_dataset:
-        train_file, valid_file = "vali.txt", "test.txt"
-    else:
-        train_file, valid_file = "train.txt", "vali.txt"
+        train_file, valid_file, test_file = "train_mini.txt", "vali_mini.txt", "test_mini.txt"
+    else:    
+        train_file, valid_file, test_file = "train.txt", "vali.txt", "test.txt"
 
     data_dir = 'data/mslr-web10k/'
     train_data = os.path.join(os.path.dirname(__file__), data_dir, data_fold, train_file)
@@ -66,7 +67,12 @@ def load_train_vali_data(data_fold, small_dataset=False):
     valid_data = os.path.join(os.path.dirname(__file__), data_dir, data_fold, valid_file)
     valid_loader = DataLoader(valid_data)
     df_valid = valid_loader.load()
-    return train_loader, df_train, valid_loader, df_valid
+
+    test_data = os.path.join(os.path.dirname(__file__), data_dir, data_fold, test_file)
+    test_loader = DataLoader(test_data)
+    df_test = test_loader.load()
+
+    return train_loader, df_train, valid_loader, df_valid, test_loader, df_test
 
 
 def init_weights(m):
